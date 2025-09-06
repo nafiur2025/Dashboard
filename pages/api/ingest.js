@@ -8,50 +8,62 @@ export const config = { api: { bodyParser: false, sizeLimit: '25mb' } }
 
 const FX = parseFloat(process.env.FX_SGD_TO_BDT || '95')
 
+// -------- helpers --------
 function toNumber(x) {
   if (x===null || x===undefined || x==='') return null
   const s = String(x).replace(/,/g,'')
   const n = parseFloat(s)
   return Number.isNaN(n) ? null : n
 }
-
+function isoDate(v) {
+  if (!v) return null
+  const d = new Date(v)
+  return isNaN(d) ? null : d.toISOString().slice(0,10)
+}
+function normStr(v) {
+  return (v ?? '').toString().trim()
+}
+// pick case-insensitively from a row by a list of synonyms
+function pick(row, keys) {
+  const map = {}
+  for (const k of Object.keys(row||{})) map[k.trim().toLowerCase()] = row[k]
+  for (const key of keys) {
+    const k = key.trim().toLowerCase()
+    if (map.hasOwnProperty(k)) return map[k]
+    if (row[key] != null) return row[key] // fallback exact
+  }
+  return null
+}
 function inferProspecting(campaign, adset) {
   const hay = `${campaign||''} ${adset||''}`.toLowerCase()
   const cold = ['prospecting','cold','broad']
   const warm = ['remarketing','retarget','rmk','retargeting','rm']
   return cold.some(k=>hay.includes(k)) && !warm.some(k=>hay.includes(k))
 }
+async function fsRead(path) { const fs = await import('fs/promises'); return fs.readFile(path) }
 
-async function fsRead(path) {
-  const fs = await import('fs/promises')
-  return fs.readFile(path)
-}
-
+// -------- main --------
 export default async function handler(req, res) {
-  // 0) env checks
+  // env guardrails
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return res.status(500).json({ ok:false, error: 'Missing Supabase env (NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)' })
   }
 
   try {
-    // 1) parse multipart form
     const form = formidable({ multiples: true })
     const { files } = await new Promise((resolve, reject) => {
       form.parse(req, (err, fields, files) => err ? reject(err) : resolve({ files }))
     })
+    const one = f => Array.isArray(f) ? f[0] : f
+    const adsFile = one(files?.ads)
+    const ordersFile = one(files?.orders)
+    if (!adsFile || !ordersFile) return res.status(400).json({ ok:false, error: 'Both files are required: ads + orders' })
 
-    const pick = (f) => Array.isArray(f) ? f[0] : f
-    const adsFile = pick(files?.ads)
-    const ordersFile = pick(files?.orders)
-    if (!adsFile || !ordersFile) {
-      return res.status(400).json({ ok:false, error: 'Both files are required: ads + orders' })
-    }
-
-    // 2) parse ADS (CSV/XLSX)
+    // ----- parse ADS (CSV/XLSX) -----
     async function parseAds(file) {
       const buf = await fsRead(file.filepath || file.path)
-      let rows = []
       const mime = (file.mimetype || file.type || '')
+      let rows = []
       if (mime.includes('excel') || mime.includes('spreadsheet')) {
         const wb = XLSX.read(buf)
         const ws = wb.Sheets['Raw Data Report'] || wb.Sheets[wb.SheetNames[0]]
@@ -64,73 +76,98 @@ export default async function handler(req, res) {
         rows = Papa.parse(txt, { header: true }).data
       }
 
-      const out = rows.map(r => {
-        const delivery = (r['Delivery level'] || r['Delivery Level'] || '').toString()
-        const isCampaign = delivery.toLowerCase()==='campaign'
-        const spendSGD = toNumber(r['Amount spent (SGD)'] ?? r['Amount Spent (SGD)'])
-        const spendBDT = (spendSGD!=null) ? spendSGD * FX : toNumber(r['Amount spent (BDT)'])
-        const conv = toNumber(r['Messaging conversations started']) ?? toNumber(r['Results'])
-        return {
-          date: (r['Reporting ends'] || r['Date']),
-          campaign_name: r['Campaign name'] || r['Campaign'],
-          adset_name: r['Ad Set Name'] || r['Ad set name'],
-          ad_name: r['Ad name'],
-          delivery_level: delivery,
-          is_prospecting: inferProspecting(r['Campaign name'], r['Ad Set Name']),
+      let total = 0, skipped = 0
+      const out = []
+      for (const r of rows) {
+        total++
+        const delivery = normStr(pick(r, ['Delivery level','Delivery Level']))
+        const dateRaw  = pick(r, ['Reporting ends','Date','Reporting date'])
+        const dateISO  = isoDate(dateRaw)
+
+        const campaign = normStr(pick(r, ['Campaign name','Campaign Name','Campaign']))
+        const adset    = normStr(pick(r, ['Ad Set Name','Ad set name','Adset Name','Adset']))
+        const ad       = normStr(pick(r, ['Ad name','Ad Name','Ad']))
+
+        // Filter: must have date + campaign; drop totals/blank rows
+        const isTotalRow = ['total','grand total'].includes(campaign.toLowerCase())
+        if (!dateISO || !campaign || isTotalRow) { skipped++; continue }
+
+        const isCampaign = delivery.toLowerCase() === 'campaign'
+        const spendSGD   = toNumber(pick(r, ['Amount spent (SGD)','Amount Spent (SGD)']))
+        const spendBDT   = spendSGD!=null ? spendSGD*FX : toNumber(pick(r, ['Amount spent (BDT)','Spend (BDT)']))
+        const conv       = toNumber(pick(r, ['Messaging conversations started','Results']))
+
+        out.push({
+          date: dateISO,
+          campaign_name: campaign,                 // REQUIRED (non-empty here)
+          adset_name: adset || '',                 // coalesce for PK
+          ad_name: ad || '',                       // coalesce for PK
+          delivery_level: delivery || '',
+          is_prospecting: inferProspecting(campaign, adset),
           spend_bdt: isCampaign ? spendBDT : 0,
-          impressions: toNumber(r['Impressions']),
-          ctr_all: toNumber(r['CTR (all)']),
-          frequency: toNumber(r['Frequency']),
+          impressions: toNumber(pick(r, ['Impressions'])),
+          ctr_all: toNumber(pick(r, ['CTR (all)','CTR All'])),
+          frequency: toNumber(pick(r, ['Frequency'])),
           conversations: isCampaign ? conv : 0
-        }
-      })
-      return out
+        })
+      }
+      return { rows: out, stats: { total, skipped } }
     }
 
-    // 3) parse ORDERS (CSV)
+    // ----- parse ORDERS (CSV) -----
     async function parseOrders(file) {
       const buf = await fsRead(file.filepath || file.path)
       const txt = buf.toString('utf8')
       const rows = Papa.parse(txt, { header: true }).data
-      const out = rows.map(r => {
-        const paid = toNumber(r['Paid Amount'] || r['Paid Amount (BDT)']) || 0
-        const due = toNumber(r['Due Amount'] || r['Due Amount (BDT)']) || 0
-        return {
-          order_id: r['Invoice Number'] || r['Order ID'],
-          order_date: r['Creation Date'] || r['Order Date'],
-          order_status: r['Order Status'] || r['Status'],
+      let total = 0, out = []
+      for (const r of rows) {
+        total++
+        const paid = toNumber(pick(r, ['Paid Amount','Paid Amount (BDT)'])) || 0
+        const due  = toNumber(pick(r, ['Due Amount','Due Amount (BDT)'])) || 0
+        out.push({
+          order_id: normStr(pick(r, ['Invoice Number','Order ID'])),
+          order_date: isoDate(pick(r, ['Creation Date','Order Date'])),
+          order_status: normStr(pick(r, ['Order Status','Status'])),
           paid_amount_bdt: paid,
           due_amount_bdt: due,
-          conversation_id: r['Conversation ID'] || null
-        }
-      })
-      return out
+          conversation_id: normStr(pick(r, ['Conversation ID']))
+        })
+      }
+      return { rows: out, stats: { total } }
     }
 
-    const adsRows = await parseAds(adsFile)
-    const ordersRows = await parseOrders(ordersFile)
+    const ads = await parseAds(adsFile)
+    const orders = await parseOrders(ordersFile)
 
-    // 4) write + compute
+    // ----- write + compute -----
     const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
 
-    const { error: e1 } = await supabase.rpc('upsert_ads_norm', { rows: adsRows })
-    if (e1) throw new Error('upsert_ads_norm: ' + e1.message)
+    const r1 = await supabase.rpc('upsert_ads_norm', { rows: ads.rows })
+    if (r1.error) throw new Error('upsert_ads_norm: ' + r1.error.message)
 
-    const { error: e2 } = await supabase.rpc('upsert_orders_norm', { rows: ordersRows })
-    if (e2) throw new Error('upsert_orders_norm: ' + e2.message)
+    const r2 = await supabase.rpc('upsert_orders_norm', { rows: orders.rows })
+    if (r2.error) throw new Error('upsert_orders_norm: ' + r2.error.message)
 
-    const runDate = (ordersRows[0]?.order_date) || (adsRows[0]?.date)
-    const { error: e3 } = await supabase.rpc('compute_daily_kpis', { run_date: runDate })
-    if (e3) throw new Error('compute_daily_kpis: ' + e3.message)
-
-    const { error: e4 } = await supabase.rpc('score_north_star', { run_date: runDate })
-    if (e4) throw new Error('score_north_star: ' + e4.message)
-
+    const runDate = orders.rows[0]?.order_date || ads.rows[0]?.date
+    const r3 = await supabase.rpc('compute_daily_kpis', { run_date: runDate })
+    if (r3.error) throw new Error('compute_daily_kpis: ' + r3.error.message)
+    const r4 = await supabase.rpc('score_north_star', { run_date: runDate })
+    if (r4.error) throw new Error('score_north_star: ' + r4.error.message)
     await supabase.rpc('generate_alerts', { run_date: runDate }).catch(()=>null)
 
-    return res.status(200).json({ ok: true, rows: { ads: adsRows.length, orders: ordersRows.length }, date: runDate })
+    return res.status(200).json({
+      ok: true,
+      stats: {
+        ads_total_rows: ads.stats.total,
+        ads_skipped: ads.stats.skipped,
+        ads_inserted: ads.rows.length,
+        orders_total_rows: orders.stats.total
+      },
+      date: runDate
+    })
   } catch (err) {
     console.error(err)
     return res.status(500).json({ ok:false, error: (err?.message || String(err)) })
   }
 }
+
