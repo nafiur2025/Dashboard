@@ -1,0 +1,23 @@
+{
+  "name": "fb-media-buyer-copilot-js",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "14.2.4",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "@supabase/supabase-js": "^2.45.4",
+    "papaparse": "^5.4.1",
+    "xlsx": "^0.18.5",
+    "formidable": "^3.5.0"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.10",
+    "postcss": "^8.4.41",
+    "autoprefixer": "^10.4.19"
+  }
+}

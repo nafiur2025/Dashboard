@@ -1,0 +1,14 @@
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[functions]
+  node_bundler = "esbuild"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[[scheduled.functions]]
+  name = "daily-recompute"
+  cron = "0 1 * * *"
