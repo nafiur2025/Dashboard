@@ -8,6 +8,9 @@ exports.handler = async () => {
   const runDate = now.toISOString().slice(0,10)
   await supabase.rpc('compute_daily_kpis', { run_date: runDate })
   await supabase.rpc('score_north_star', { run_date: runDate })
-  await supabase.rpc('generate_alerts', { run_date: runDate }).catch(()=>null)
+  const r5 = await supabase.rpc('generate_alerts', { run_date: runDate })
+if (r5.error) {
+  console.warn('generate_alerts (cron):', r5.error.message)
+}
   return { statusCode: 200, body: JSON.stringify({ ok: true, runDate }) }
 }
