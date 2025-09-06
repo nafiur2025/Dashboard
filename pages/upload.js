@@ -1,4 +1,3 @@
-
 import { useState } from 'react'
 
 export default function Upload() {
@@ -43,11 +42,7 @@ export default function Upload() {
           <div className="text-xs text-gray-600 mb-1">Orders CSV</div>
           <input type="file" onChange={e => setOrdersFile(e.target.files?.[0] ?? null)} />
         </div>
-        <button
-          onClick={submit}
-          disabled={busy}
-          className={`px-4 py-2 rounded-2xl text-white ${busy?'bg-gray-500':'bg-black'}`}
-        >
+        <button onClick={submit} disabled={busy} className={`px-4 py-2 rounded-2xl text-white ${busy?'bg-gray-500':'bg-black'}`}>
           {busy ? 'Uploading…' : 'Upload & Ingest'}
         </button>
       </div>
@@ -55,4 +50,3 @@ export default function Upload() {
     </main>
   )
 }
-
