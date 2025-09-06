@@ -182,7 +182,12 @@ export default async function handler(req, res) {
     const runDate = orders.rows[0]?.order_date || ads.rows[0]?.date
     const r3 = await supabase.rpc('compute_daily_kpis', { run_date: runDate }); if (r3.error) throw new Error('compute_daily_kpis: ' + r3.error.message)
     const r4 = await supabase.rpc('score_north_star', { run_date: runDate });   if (r4.error) throw new Error('score_north_star: ' + r4.error.message)
-    await supabase.rpc('generate_alerts', { run_date: runDate }).catch(()=>null)
+    const r5 = await supabase.rpc('generate_alerts', { run_date: runDate })
+if (r5.error) {
+  // optional: just log and continue; alerts are non-blocking
+  console.warn('generate_alerts:', r5.error.message)
+}
+
 
     return res.status(200).json({
       ok: true,
